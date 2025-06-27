@@ -1,0 +1,57 @@
+# ================================
+# Hydra Configuration
+# ================================
+hydra:
+  job:
+    chdir: True
+  run:
+    dir: ./outputs_2d_0626_step7_m1  # Output directory for logs and checkpoints
+
+# ================================
+# General Settings
+# ================================
+seed: 42                            # Random seed for reproducibility
+
+# ================================
+# Dataset Settings
+# ================================
+data_path: ./training_data_2d_0614  # Path to dataset folder
+mul_noise_level: 0.2
+add_noise_level: 0.2
+train_ratio: 0.9                    # Ratio of dataset used for training
+
+# NOTE: pred_time must match model.fno.out_channels
+pred_time: 7                        # Prediction horizon (number of time steps)
+
+# ================================
+# DataLoader Settings
+# ================================
+train_batch_size: 16                      # Batch size for training
+val_batch_size: 4
+num_workers: 8                      # Number of worker processes for data loading
+
+# ================================
+# Training Settings
+# ================================
+start_lr: 0.003                     # Initial learning rate
+max_epochs: 100                     # Number of training epochs
+eta_min: 1e-5                       # Minimum learning rate for CosineAnnealingLR
+save_interval: 10                  # Save checkpoint every N epochs
+checkpoint_path: ./savepoints     # Directory to save checkpoints
+betas: [0.9, 0.999]                # Adam optimizer parameters (momentum terms)
+
+# ================================
+# Model Architecture (FNO)
+# ================================
+model:
+  fno:
+    in_channels: 3                 # Input features: e.g., pressure, density, sound speed
+    out_channels: 7                # Output features = pred_time = 7
+    dimension: 2                   # Spatial dimensionality (2D or 3D)
+    latent_channels: 48            # Number of latent channels in FNO layers
+    num_fno_layers: 6              # Number of FNO layers (blocks)
+    num_fno_modes: 32              # Fourier modes kept in spectral domain
+    padding: 4                     # Spatial padding size
+    decoder_layers: 1              # Number of decoder (fully connected) layers
+    decoder_layer_size: 128        # Width of each decoder layer
+
