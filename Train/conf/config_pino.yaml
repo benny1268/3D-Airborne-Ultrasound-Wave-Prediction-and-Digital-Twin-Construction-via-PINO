@@ -16,8 +16,8 @@ seed: 42                            # Random seed for reproducibility
 # Dataset Settings
 # ================================
 data_path: ./training_data_2d_0614  # Path to dataset folder
-mul_noise_level: 0.2
-add_noise_level: 0.2
+mul_noise_level: 0.3
+add_noise_level: 0.5
 train_ratio: 0.9                    # Ratio of dataset used for training
 
 # NOTE: pred_time must match model.fno.out_channels

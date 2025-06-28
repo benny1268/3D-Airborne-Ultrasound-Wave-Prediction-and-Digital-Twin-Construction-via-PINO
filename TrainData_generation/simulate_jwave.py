@@ -26,7 +26,6 @@ from utils import simulate_wave_propagation  # Your custom wave propagation func
 # === Image Processing ===
 from skimage.draw import polygon, disk  # Used to generate masks for geometric shapes
 
-
 def generate_random_sources_and_signals(domain, time_axis):
     """
     Generate tone burst ultrasound sources in 2D or 3D, with randomized delay.
@@ -223,7 +222,7 @@ def generate_shape_mask_3d(domain_size, num_shapes=1):
     """
     Generate a 3D binary mask with randomly placed heterogeneous shapes.
     Each shape is assigned a random density and sound speed.
-    
+
     Args:
         domain_size (tuple): Size of the 3D simulation grid (Nx, Ny, Nz).
         num_shapes (int): Number of heterogeneous objects to generate.
@@ -233,63 +232,100 @@ def generate_shape_mask_3d(domain_size, num_shapes=1):
         densities (List[float]): Corresponding densities for each shape.
         sound_speeds (List[float]): Corresponding sound speeds for each shape.
     """
+    Nx, Ny, Nz = domain_size
+    masks = np.zeros((num_shapes, Nx, Ny, Nz), dtype=int)
+    densities = []
+    sound_speeds = []
 
     def sphere(center, radius, shape):
-        """Return indices for a solid sphere."""
         x, y, z = np.indices(shape)
         mask = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2 <= radius**2
         return np.where(mask)
 
+    def hollow_sphere(center, radius, thickness, shape):
+        x, y, z = np.indices(shape)
+        dist_sq = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2
+        outer = dist_sq <= radius**2
+        inner = dist_sq <= (radius - thickness)**2
+        return np.where(outer & ~inner)
+
     def cube(center, size, shape):
-        """Return indices for a solid cube."""
         half = size // 2
         x_min, x_max = max(center[0] - half, 0), min(center[0] + half, shape[0])
         y_min, y_max = max(center[1] - half, 0), min(center[1] + half, shape[1])
         z_min, z_max = max(center[2] - half, 0), min(center[2] + half, shape[2])
-        x, y, z = np.meshgrid(
-            np.arange(x_min, x_max),
-            np.arange(y_min, y_max),
-            np.arange(z_min, z_max),
-            indexing='ij'
-        )
+        x, y, z = np.meshgrid(np.arange(x_min, x_max),
+                              np.arange(y_min, y_max),
+                              np.arange(z_min, z_max),
+                              indexing='ij')
         return x.ravel(), y.ravel(), z.ravel()
 
-    def cylinder(center, radius, shape):
-        """Return indices for a vertical cylinder aligned along z-axis."""
-        x, y, z = np.indices(shape)
-        mask = ((x - center[0])**2 + (y - center[1])**2 <= radius**2) & \
-               (z >= center[2] - radius) & (z <= center[2] + radius)
+    def hollow_cube(center, size, thickness, shape):
+        mask = np.zeros(shape, dtype=bool)
+        rr, cc, zz = cube(center, size, shape)
+        mask[rr, cc, zz] = 1
+        rr_inner, cc_inner, zz_inner = cube(center, size - 2 * thickness, shape)
+        mask[rr_inner, cc_inner, zz_inner] = 0
         return np.where(mask)
 
-    # === Initialize output containers ===
-    masks = np.zeros((num_shapes, *domain_size), dtype=int)
-    densities = []
-    sound_speeds = []
+    def ellipsoid(center, radii, shape):
+        x, y, z = np.indices(shape)
+        norm = (((x - center[0]) / radii[0]) ** 2 +
+                ((y - center[1]) / radii[1]) ** 2 +
+                ((z - center[2]) / radii[2]) ** 2)
+        return np.where(norm <= 1)
 
-    fixed_center = (
-        domain_size[0] // 2,
-        domain_size[1] // 2,
-        domain_size[2] * 3 // 5
-    )
+    def pyramid(center, size, shape):
+        mask = np.zeros(shape, dtype=bool)
+        cx, cy, cz = center
+        half = size // 2
+        for dz in range(size):
+            scale = (size - dz) / size
+            x_min = max(int(cx - half * scale), 0)
+            x_max = min(int(cx + half * scale), shape[0])
+            y_min = max(int(cy - half * scale), 0)
+            y_max = min(int(cy + half * scale), shape[1])
+            z = cz - dz
+            if z < 0 or z >= shape[2]:
+                continue
+            mask[x_min:x_max, y_min:y_max, z] = 1
+        return np.where(mask)
 
     for i in range(num_shapes):
-        shape_type = random.choice(['sphere', 'cube', 'cylinder'])
-        size = random.randint(10, 50)  # Shared default range
+        shape_type = random.choice([
+            'sphere', 'hollow_sphere', 'cube', 'hollow_cube',
+            'ellipsoid', 'pyramid'
+        ])
+        hollow = 'hollow' in shape_type
+        size = random.randint(10, 40)
+        thickness = random.randint(2, 8) if hollow else 0
 
-        # === Random material selection ===
+        center = (
+            random.randint(size, Nx - size),
+            random.randint(size, Ny - size),
+            random.randint(size, Nz - size)
+        )
+
         material = random.choice(list(material_properties.keys()))
         densities.append(material_properties[material]["density"])
         sound_speeds.append(material_properties[material]["sound_speed"])
 
         if shape_type == 'sphere':
-            rr, cc, zz = sphere(fixed_center, size, domain_size)
+            rr, cc, zz = sphere(center, size, domain_size)
+        elif shape_type == 'hollow_sphere':
+            rr, cc, zz = hollow_sphere(center, size, thickness, domain_size)
         elif shape_type == 'cube':
-            rr, cc, zz = cube(fixed_center, size, domain_size)
-        elif shape_type == 'cylinder':
-            rr, cc, zz = cylinder(fixed_center, size, domain_size)
+            rr, cc, zz = cube(center, size, domain_size)
+        elif shape_type == 'hollow_cube':
+            rr, cc, zz = hollow_cube(center, size, thickness, domain_size)
+        elif shape_type == 'ellipsoid':
+            radii = (size, size // 2, size // 3)
+            rr, cc, zz = ellipsoid(center, radii, domain_size)
+        elif shape_type == 'pyramid':
+            rr, cc, zz = pyramid(center, size, domain_size)
 
-        # Update mask
         masks[i, rr, cc, zz] = 1
+        masks[i, :, :, :70] = 0
 
     return masks, densities, sound_speeds
 
@@ -327,7 +363,7 @@ def save_hdf5(hdf5_filename, stacked_pressure, density_patch, sound_speed_patch,
         f.create_dataset(
             "pressure",
             data=stacked_pressure,
-            dtype=np.float16,
+            dtype=np.float32,
             compression="gzip",
             compression_opts=9,
             chunks=chunks_p,
@@ -335,7 +371,7 @@ def save_hdf5(hdf5_filename, stacked_pressure, density_patch, sound_speed_patch,
         f.create_dataset(
             "density",
             data=density_patch,
-            dtype=np.float16,
+            dtype=np.float32,
             compression="gzip",
             compression_opts=9,
             chunks=chunks_s,
@@ -343,7 +379,7 @@ def save_hdf5(hdf5_filename, stacked_pressure, density_patch, sound_speed_patch,
         f.create_dataset(
             "sound_speed",
             data=sound_speed_patch,
-            dtype=np.float16,
+            dtype=np.float32,
             compression="gzip",
             compression_opts=9,
             chunks=chunks_s,
@@ -352,8 +388,8 @@ def save_hdf5(hdf5_filename, stacked_pressure, density_patch, sound_speed_patch,
 if __name__ == "__main__":
 
     # === Simulation Parameters ===
-    N               = 5              # Number of simulations to run
-    simulation_time = 0.00075         # Duration of each simulation in seconds
+    N               = 10              # Number of simulations to run
+    simulation_time = 0.001         # Duration of each simulation in seconds
     dt              = 1e-8           # Time step interval for j-Wave
     save_step       = 500            # Interval in time steps for recording pressure field
     material_file   = 'material_properties.csv'  # Material properties file (CSV)
@@ -373,8 +409,8 @@ if __name__ == "__main__":
     skip_steps      = 30             # Number of initial time steps to ignore (before pressure field stabilizes)
     log_process     = False          # Whether to apply log scaling to the pressure field
     save_patch      = True           # Whether to save patch data
-    patch_output_dir = "./training_data_patch_2d_0627"
-    hdf5_filename    = "./training_data_2d_0627.h5"
+    patch_output_dir = "./training_data_patch_2d_0628_v2"
+    hdf5_filename    = "./training_data_2d_0628_v2.h5"
 
     # === Derived Settings ===
     os.makedirs(patch_output_dir, exist_ok=True)
@@ -397,15 +433,15 @@ if __name__ == "__main__":
     with h5py.File(hdf5_filename, "w") as f:
         # Create pre-allocated HDF5 datasets for full-resolution simulation outputs
         dset_pressure = f.create_dataset("pressure", shape=(N, num_saved_steps, *save_shape),
-                                         dtype=np.float16, compression="gzip", compression_opts=9,
+                                         dtype=np.float32, compression="gzip", compression_opts=9,
                                          chunks=(1, 1, *save_shape))
 
         dset_density = f.create_dataset("density", shape=(N, *save_shape),
-                                        dtype=np.float16, compression="gzip", compression_opts=9,
+                                        dtype=np.float32, compression="gzip", compression_opts=9,
                                         chunks=(1, *save_shape))
 
         dset_sound_speed = f.create_dataset("sound_speed", shape=(N, *save_shape),
-                                            dtype=np.float16, compression="gzip", compression_opts=9,
+                                            dtype=np.float32, compression="gzip", compression_opts=9,
                                             chunks=(1, *save_shape))
 
         # Load material property table into dictionary
@@ -440,8 +476,8 @@ if __name__ == "__main__":
 
             # Crop margins and log-transform fields (improves network training stability)
             slices = tuple(slice(margin, dim - margin) for dim in domain_shape)
-            density_ = np.log10(density * 10)[slices].astype(np.float16)
-            sound_speed_ = np.log10(sound_speed)[slices].astype(np.float16)
+            density_ = np.log10(density * 10)[slices].astype(np.float32)
+            sound_speed_ = np.log10(sound_speed)[slices].astype(np.float32)
             dset_density[i] = density_
             dset_sound_speed[i] = sound_speed_
 
@@ -476,7 +512,7 @@ if __name__ == "__main__":
             pressure = pressure[full_slices]
 
             if log_process:
-                pressure = (pressure.at[:].set(jnp.sign(pressure) * jnp.log10(1 + jnp.abs(pressure)))).astype(np.float16)
+                pressure = (pressure.at[:].set(jnp.sign(pressure) * jnp.log10(1 + jnp.abs(pressure)))).astype(np.float32)
 
             dset_pressure[i] = pressure
 
