@@ -3,7 +3,7 @@
 本專案提供一套完整流程，用於訓練**空氣超音波陣列物理模擬的 PINO 模型**，包含：
 
 - 聲場模擬（使用 [`jwave`](https://github.com/ucl-bug/jwave)）
-- AI 模型訓練（使用 [NVIDIA PhysicsNeMo](https://developer.nvidia.com/physicsnemo)）
+- AI 模型訓練（使用 [`NVIDIA PhysicsNeMo`](https://developer.nvidia.com/physicsnemo)）
 
 ---
 
