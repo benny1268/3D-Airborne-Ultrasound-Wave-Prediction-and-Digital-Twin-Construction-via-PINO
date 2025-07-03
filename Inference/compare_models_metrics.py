@@ -5,8 +5,7 @@ import torch
 import physicsnemo
 import time
 import os
-
-def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, device="cuda"):
+def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, pressure_mean=0, pressure_std=1.0, device="cuda"):
     """
     Predict the full spatial domain using a trained model (no patching).
 
@@ -22,17 +21,26 @@ def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, dev
     """
 
     # === Load initial input: p0, density, sound_speed ===
-    def read_input(file_path, idx=0):
+    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
+        density_min = 1.38
+        density_max = 5500
+        sound_speed_min = 150
+        sound_speed_max = 5400
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
             pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
+            pressure_t = (pressure_t - pressure_mean)  / pressure_std
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
+            # Min-Max Normalization to [0, 1]
+            density = (density - density_min) / (density_max - density_min)
+            sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
+
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
         return invar, total_steps
 
     # === Read input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx)
+    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
     input_data = input_data.to(device)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype, device=device)
@@ -52,16 +60,27 @@ def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, dev
         actual_pred_time = min(pred_time, remaining_steps)
         result_matrix[step+1:step+1+actual_pred_time] = output[:actual_pred_time]
 
+    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+
     return result_matrix.cpu().numpy()
 
-def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, device="cuda"):
+def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, pressure_mean=0, pressure_std=1.0, device="cuda"):
     # === Load the initial input (p0, density, sound_speed) ===
-    def read_input(file_path, idx=0):
+    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
+        density_min = 1.38
+        density_max = 5500
+        sound_speed_min = 150
+        sound_speed_max = 5400
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
             pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
+            pressure_t = (pressure_t - pressure_mean)  / pressure_std
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
+            # Min-Max Normalization to [0, 1]
+            density = (density - density_min) / (density_max - density_min)
+            sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
+
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
         return invar, total_steps
 
@@ -132,7 +151,7 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
         return pred_full / torch.clamp(count_full, min=1e-8)
 
     # === Load input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx)
+    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype)
     result_matrix[0] = input_data[0]  # set p0
@@ -177,7 +196,9 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
 
         combined_result = combine(preds, result_matrix.shape, pred_time, block_size, slide_step)
         result_matrix[step+1:step+1+actual_pred_time] = combined_result[:actual_pred_time]
-    
+
+    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+
     return result_matrix.cpu().numpy()
 
 def compute_relative_l2_errors(y_pred, y_true, total_steps):
@@ -207,7 +228,7 @@ def compute_nash_sutcliffe_efficiency(y_pred, y_true, total_steps):
         if denom == 0:
             nse = np.nan
         else:
-            nse = np.sum((y_pred[t] - y_true[t]) ** 2) / denom
+            nse = 1 - np.sum((y_pred[t] - y_true[t]) ** 2) / denom
         nse_list.append(nse)
     return nse_list
 
@@ -294,13 +315,14 @@ def compute_mean_over_double_threshold(y_true, total_steps):
         filtered_mean_list.append(0.0)
     return filtered_mean_list
 
-def process_dataset(file_path, model_path, case_nums=10, device="cuda", log_process=False):
+def process_dataset(file_path, model_path, case_nums=10, pred_time=7, device="cuda", log_process=False, pressure_mean=0, pressure_std=1.0):
 
     def inverse_transform(pressure_transformed):
         abs_val = np.abs(pressure_transformed)
         sign = np.sign(pressure_transformed)
-        original = sign * (np.power(10.0, abs_val - 1.0))
+        original = sign * (np.power(10.0, abs_val) - 1.0)
         return original
+
         
     metric_results = {
         "Relative L2 Error": [],
@@ -314,7 +336,7 @@ def process_dataset(file_path, model_path, case_nums=10, device="cuda", log_proc
     for case_idx in range(case_nums):
         print(f"Processing Case {case_idx}...")
         start_time = time.time()
-        result_matrix = predict_multstep(file_path=file_path, model_file_path=model_path, pred_time=7, case_idx=case_idx, device=device)
+        result_matrix = predict_multstep(file_path=file_path, model_file_path=model_path, pred_time=pred_time, case_idx=case_idx, device=device, pressure_mean=pressure_mean, pressure_std=pressure_std)
         print(f"Compute time : {time.time() - start_time}")
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][case_idx].shape[0]
@@ -356,28 +378,25 @@ def plot_multi_models_with_shaded_error(data_all, ylabel, title, save_path, metr
     plt.close()
 
 if __name__ == "__main__":
-    data_path = "./Data/pressure_data_2d_0628_v1.h5"
+    data_path = "./Data/training_data_2d_0628_v2.h5"
+    output_dir = "./error_results/model_comparison_diff_layers_nums"
+
     model_paths = {
-        "Fourier Layer = 4": "./model/hele_2d_patch/no_log/diff_num_layer/v1.mdlus",
-        "Fourier Layer = 6": "./model/hele_2d_patch/no_log/diff_num_layer/v2.mdlus",
-        "Fourier Layer = 8": "./model/hele_2d_patch/no_log/diff_num_layer/v3.mdlus",        
-    }
-    model_paths = {
-        "Latent Channels = 16": "./model/hele_2d_patch/no_log/diff_l_channel/l1.mdlus",
-        "Latent Channels = 32": "./model/hele_2d_patch/no_log/diff_l_channel/l2.mdlus",
-        "Latent Channels = 48": "./model/hele_2d_patch/no_log/diff_l_channel/l3.mdlus",        
+        "Fourier Layer = 4": "./model/hele_2d_patch/0703/diff_layers/l4.mdlus",
+        "Fourier Layer = 6": "./model/hele_2d_patch/0703/diff_layers/l6.mdlus",
+        "Fourier Layer = 8": "./model/hele_2d_patch/0703/diff_layers/l8.mdlus",
+        "Fourier Layer = 10": "./model/hele_2d_patch/0703/diff_layers/l10.mdlus",       
     }
     data_all = {}
 
-    for model_name, model_path in model_paths.items():
+    for i, (model_name, model_path) in enumerate(model_paths.items()):
         print(f"\n=== Processing Model: {model_name} ===")
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         print("Processing Dataset...")
-        data_all[model_name] = process_dataset(data_path, model_path, case_nums=10, device=device)
+        data_all[model_name] = process_dataset(data_path, model_path, case_nums=10, pred_time=7, device=device, log_process=False)
 
-    output_dir = "./error_results/model_comparison"
     os.makedirs(output_dir, exist_ok=True)
     plot_multi_models_with_shaded_error(
         data_all=data_all,

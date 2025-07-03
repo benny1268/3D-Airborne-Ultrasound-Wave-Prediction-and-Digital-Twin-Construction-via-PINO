@@ -7,7 +7,7 @@ import physicsnemo
 import pandas as pd
 import os
 
-def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, device="cuda"):
+def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, pressure_mean=0, pressure_std=1.0, device="cuda"):
     """
     Predict the full spatial domain using a trained model (no patching).
 
@@ -23,17 +23,26 @@ def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, dev
     """
 
     # === Load initial input: p0, density, sound_speed ===
-    def read_input(file_path, idx=0):
+    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
+        density_min = 1.38
+        density_max = 5500
+        sound_speed_min = 150
+        sound_speed_max = 5400
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
             pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
+            pressure_t = (pressure_t - pressure_mean)  / pressure_std
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
+            # Min-Max Normalization to [0, 1]
+            density = (density - density_min) / (density_max - density_min)
+            sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
+
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
         return invar, total_steps
 
     # === Read input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx)
+    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
     input_data = input_data.to(device)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype, device=device)
@@ -53,16 +62,27 @@ def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, dev
         actual_pred_time = min(pred_time, remaining_steps)
         result_matrix[step+1:step+1+actual_pred_time] = output[:actual_pred_time]
 
+    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+
     return result_matrix.cpu().numpy()
 
-def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, device="cuda"):
+def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, pressure_mean=0, pressure_std=1.0, device="cuda"):
     # === Load the initial input (p0, density, sound_speed) ===
-    def read_input(file_path, idx=0):
+    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
+        density_min = 1.38
+        density_max = 5500
+        sound_speed_min = 150
+        sound_speed_max = 5400
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
             pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
+            pressure_t = (pressure_t - pressure_mean)  / pressure_std
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
+            # Min-Max Normalization to [0, 1]
+            density = (density - density_min) / (density_max - density_min)
+            sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
+
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
         return invar, total_steps
 
@@ -133,7 +153,7 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
         return pred_full / torch.clamp(count_full, min=1e-8)
 
     # === Load input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx)
+    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype)
     result_matrix[0] = input_data[0]  # set p0
@@ -178,14 +198,16 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
 
         combined_result = combine(preds, result_matrix.shape, pred_time, block_size, slide_step)
         result_matrix[step+1:step+1+actual_pred_time] = combined_result[:actual_pred_time]
-    
+
+    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+
     return result_matrix.cpu().numpy()
 
 def inverse_transform(pressure_transformed):
-    abs_val = np.abs(pressure_transformed).astype(np.float32)  # 保持精度
+    abs_val = np.abs(pressure_transformed)
     sign = np.sign(pressure_transformed)
-    original = sign * (np.power(10, abs_val) - 1)
-    return original.astype(np.float32)
+    original = sign * (np.power(10.0, abs_val) - 1.0)
+    return original
 
 def create_comparison_gif(result_matrix, file_path, case_idx=0, output_gif="Local_PINO_result.gif", fps=10, plot=True, log_process=False):
     """

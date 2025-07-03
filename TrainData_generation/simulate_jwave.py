@@ -123,7 +123,7 @@ def generate_shape_mask_2d(domain_size, num_shapes=1):
     densities, sound_speeds = [], []
 
     margin = 10                    # Minimum margin from edges
-    source_protection = (100, 276)  # Region to zero out for signal integrity
+    source_protection = (70, 276)  # Region to zero out for signal integrity
 
     for i in range(num_shapes):
         # === Random shape configuration ===
@@ -407,10 +407,9 @@ if __name__ == "__main__":
 
     # === Output Settings ===
     skip_steps      = 30             # Number of initial time steps to ignore (before pressure field stabilizes)
-    log_process     = False          # Whether to apply log scaling to the pressure field
     save_patch      = True           # Whether to save patch data
-    patch_output_dir = "./training_data_patch_2d_0628_v2"
-    hdf5_filename    = "./training_data_2d_0628_v2.h5"
+    patch_output_dir = "./training_data_patch_2d_0703"
+    hdf5_filename    = "./training_data_2d_0703.h5"
 
     # === Derived Settings ===
     os.makedirs(patch_output_dir, exist_ok=True)
@@ -474,12 +473,13 @@ if __name__ == "__main__":
                 density[shape_mask[j] == 1] = densities[j]
                 sound_speed[shape_mask[j] == 1] = sound_speeds[j]
 
-            # Crop margins and log-transform fields (improves network training stability)
+            # Crop margins
             slices = tuple(slice(margin, dim - margin) for dim in domain_shape)
-            density_ = np.log10(density * 10)[slices].astype(np.float32)
-            sound_speed_ = np.log10(sound_speed)[slices].astype(np.float32)
-            dset_density[i] = density_
-            dset_sound_speed[i] = sound_speed_
+            density_cropped = density[slices]
+            sound_speed_cropped = sound_speed[slices]
+
+            dset_density[i-start_idx] = density[slices]
+            dset_sound_speed[i-start_idx] = sound_speed[slices]
 
             # Construct Fourier fields
             density_fs = FourierSeries(np.expand_dims(density, -1), domain)
@@ -495,9 +495,9 @@ if __name__ == "__main__":
 
             simulation_start_time = time.time()
             pressure = compiled_simulator()
-            pressure = np.squeeze(pressure, axis=-1)
             print(f"jwave simulate time: {time.time()-simulation_start_time}")
 
+            pressure = np.squeeze(pressure, axis=-1)
             if np.any(np.isnan(pressure)):
                 print(f"NaN detected in pressure at simulation {i+1}, skipping...")
                 continue
@@ -511,10 +511,7 @@ if __name__ == "__main__":
             full_slices = (slice(skip_steps, None),) + crop_slices
             pressure = pressure[full_slices]
 
-            if log_process:
-                pressure = (pressure.at[:].set(jnp.sign(pressure) * jnp.log10(1 + jnp.abs(pressure)))).astype(np.float32)
-
-            dset_pressure[i] = pressure
+            dset_pressure[i-start_idx] = pressure
 
             # Patch slicing and saving (multithreaded)
             if save_patch:
@@ -523,8 +520,8 @@ if __name__ == "__main__":
                         for x in range(num_patches_x):
                             for y in range(num_patches_y):
                                 x_start, y_start = x * stride, y * stride
-                                density_patch = density_[x_start:x_start + window_size, y_start:y_start + window_size]
-                                sound_speed_patch = sound_speed_[x_start:x_start + window_size, y_start:y_start + window_size]
+                                density_patch = density_cropped[x_start:x_start + window_size, y_start:y_start + window_size]
+                                sound_speed_patch = sound_speed_cropped[x_start:x_start + window_size, y_start:y_start + window_size]
 
                                 stacked_pressure, patch_count = [], 0
                                 for t in range(num_saved_steps):
@@ -548,19 +545,19 @@ if __name__ == "__main__":
                             for y in range(num_patches_y):
                                 for z in range(num_patches_z):
                                     x_start, y_start, z_start = x * stride, y * stride, z * stride
-                                    density_patch = density_[x_start:x_start + window_size,
-                                                            y_start:y_start + window_size,
-                                                            z_start:z_start + window_size]
-                                    sound_speed_patch = sound_speed_[x_start:x_start + window_size,
+                                    density_patch = density_cropped[x_start:x_start + window_size,
                                                                     y_start:y_start + window_size,
                                                                     z_start:z_start + window_size]
+                                    sound_speed_patch = sound_speed_cropped[x_start:x_start + window_size,
+                                                                            y_start:y_start + window_size,
+                                                                            z_start:z_start + window_size]
                                     
                                     stacked_pressure, patch_count = [], 0
                                     for t in range(num_saved_steps):
                                         patch = pressure[t, x_start:x_start + window_size,
                                                         y_start:y_start + window_size,
                                                         z_start:z_start + window_size]
-                                        if np.sum(np.abs(patch) > threshold) < 5000:
+                                        if np.sum(np.abs(patch) > threshold) < 3000:
                                             if patch_count > 1:
                                                 executor.submit(save_hdf5, os.path.join(
                                                     patch_output_dir, f"n_{i}_x_{x}_y_{y}_z_{z}_t_{t - patch_count}__{patch_count:03d}.h5"),

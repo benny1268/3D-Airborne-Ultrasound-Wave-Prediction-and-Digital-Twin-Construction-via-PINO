@@ -6,7 +6,7 @@ import physicsnemo
 import time
 import os
 
-def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, device="cuda"):
+def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, pressure_mean=0, pressure_std=1.0, device="cuda"):
     """
     Predict the full spatial domain using a trained model (no patching).
 
@@ -22,17 +22,26 @@ def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, dev
     """
 
     # === Load initial input: p0, density, sound_speed ===
-    def read_input(file_path, idx=0):
+    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
+        density_min = 1.38
+        density_max = 5500
+        sound_speed_min = 150
+        sound_speed_max = 5400
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
             pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
+            pressure_t = (pressure_t - pressure_mean)  / pressure_std
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
+            # Min-Max Normalization to [0, 1]
+            density = (density - density_min) / (density_max - density_min)
+            sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
+
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
         return invar, total_steps
 
     # === Read input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx)
+    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
     input_data = input_data.to(device)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype, device=device)
@@ -52,16 +61,27 @@ def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, dev
         actual_pred_time = min(pred_time, remaining_steps)
         result_matrix[step+1:step+1+actual_pred_time] = output[:actual_pred_time]
 
+    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+
     return result_matrix.cpu().numpy()
 
-def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, device="cuda"):
+def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, pressure_mean=0, pressure_std=1.0, device="cuda"):
     # === Load the initial input (p0, density, sound_speed) ===
-    def read_input(file_path, idx=0):
+    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
+        density_min = 1.38
+        density_max = 5500
+        sound_speed_min = 150
+        sound_speed_max = 5400
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
             pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
+            pressure_t = (pressure_t - pressure_mean)  / pressure_std
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
+            # Min-Max Normalization to [0, 1]
+            density = (density - density_min) / (density_max - density_min)
+            sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
+
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
         return invar, total_steps
 
@@ -132,7 +152,7 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
         return pred_full / torch.clamp(count_full, min=1e-8)
 
     # === Load input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx)
+    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype)
     result_matrix[0] = input_data[0]  # set p0
@@ -144,7 +164,11 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
     # === Main prediction loop ===
     for step in range(0, total_steps, pred_time):
         preds = []
-        input_data[0] = result_matrix[step]  # update p0
+        with h5py.File(file_path, "r") as f:
+            pressure_t = f["pressure"][case_idx][step]
+
+        current_pressure_field = torch.tensor(pressure_t, dtype=input_data[0].dtype, device=device)        
+        input_data[0] = current_pressure_field#result_matrix[step]  # update p0
         blocks = slide_and_split(input_data, block_size, slide_step)
         batch_blocks = []
 
@@ -177,8 +201,11 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
 
         combined_result = combine(preds, result_matrix.shape, pred_time, block_size, slide_step)
         result_matrix[step+1:step+1+actual_pred_time] = combined_result[:actual_pred_time]
-    
+
+    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+
     return result_matrix.cpu().numpy()
+
 
 def compute_relative_l2_errors(y_pred, y_true, total_steps):
     """
@@ -294,27 +321,28 @@ def compute_mean_over_double_threshold(y_true, total_steps):
         filtered_mean_list.append(0.0)
     return filtered_mean_list
 
-def process_dataset(file_path, model_path, case_nums=10, device="cuda", log_process=False):
+def process_dataset(file_path, model_path, case_nums=10, device="cuda", log_process=False, pressure_mean=0, pressure_std=1.0):
 
     def inverse_transform(pressure_transformed):
         abs_val = np.abs(pressure_transformed)
         sign = np.sign(pressure_transformed)
-        original = sign * (np.power(10.0, abs_val - 1.0))
+        original = sign * (np.power(10.0, abs_val) - 1.0)
         return original
+
         
     metric_results = {
         "Relative L2 Error": [],
         "RMSE": [],
         "Nash–Sutcliffe Efficiency": [],
         "RMSE (Value> Mean)": [],
-        "Fluctuation Correlation": [], 
+        "Fluctuation Correlation": [],
         "GT_mean_over_mean": [],
     }
 
     for case_idx in range(case_nums):
         print(f"Processing Case {case_idx}...")
         start_time = time.time()
-        result_matrix = predict_multstep(file_path=file_path, model_file_path=model_path, pred_time=7, case_idx=case_idx, device=device)
+        result_matrix = predict_multstep(file_path=file_path, model_file_path=model_path, pred_time=7, case_idx=case_idx, device=device, pressure_mean=pressure_mean, pressure_std=pressure_std)
         print(f"Compute time : {time.time() - start_time}")
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][case_idx].shape[0]
@@ -358,9 +386,9 @@ def plot_with_shaded_error(train_data, test_data, ylabel, title, save_path, metr
     plt.close()
 
 if __name__ == "__main__":
-    train_path = "./Data/pressure_data_2d_0626.h5"
-    test_path = "./Data/pressure_data_2d_0626_test.h5"
-    model_path = "./model/hele_2d_patch/0626/step1_0626_m1.mdlus"
+    train_path = "./Data/training_data_2d_0630.h5"
+    test_path = "./Data/training_data_2d_0628_v1.h5"
+    model_path = "./model/hele_2d_patch/0630/v1.mdlus"
 
     # Extract model name from model_path (without extension)
     model_filename = os.path.basename(model_path)
@@ -373,10 +401,10 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("Processing training set...")
-    train_metrics = process_dataset(train_path, model_path, case_nums=5, device=device)
+    train_metrics = process_dataset(train_path, model_path, case_nums=10, device=device)
 
-    print("Processing test set...")
-    test_metrics = process_dataset(test_path, model_path, case_nums=5, device=device)
+    print("\nProcessing test set...")
+    test_metrics = process_dataset(test_path, model_path, case_nums=10, device=device)
 
     # figure 1: Relative L2 Error
     plot_with_shaded_error(
