@@ -45,7 +45,7 @@ def generate_random_sources_and_signals(domain, time_axis):
     # === Common Signal Parameters ===
     signal_freq = 40_000  # Hz
     num_cycles = random.randint(2, 4)
-    amplitude = 250
+    amplitude = 3
 
     t = jnp.arange(0, time_axis.t_end, time_axis.dt)
     sample_freq = 1.0 / time_axis.dt
@@ -403,13 +403,13 @@ if __name__ == "__main__":
     # === Patch Extraction Parameters ===
     window_size     = 64             # Size of each spatial patch
     stride          = 32             # Step size when sliding the window over the spatial domain
-    threshold       = 0.01           # Threshold to determine if a patch contains meaningful data
+    threshold       = 1e-3           # Threshold to determine if a patch contains meaningful data
 
     # === Output Settings ===
     skip_steps      = 30             # Number of initial time steps to ignore (before pressure field stabilizes)
     save_patch      = True           # Whether to save patch data
-    patch_output_dir = "./training_data_patch_2d_0703"
-    hdf5_filename    = "./training_data_2d_0703.h5"
+    patch_output_dir = "./training_data_patch_2d_0703_v4"
+    hdf5_filename    = "./training_data_2d_0703_v4.h5"
 
     # === Derived Settings ===
     os.makedirs(patch_output_dir, exist_ok=True)
@@ -478,8 +478,8 @@ if __name__ == "__main__":
             density_cropped = density[slices]
             sound_speed_cropped = sound_speed[slices]
 
-            dset_density[i-start_idx] = density[slices]
-            dset_sound_speed[i-start_idx] = sound_speed[slices]
+            dset_density[i-start_idx] = density_cropped
+            dset_sound_speed[i-start_idx] = sound_speed_cropped
 
             # Construct Fourier fields
             density_fs = FourierSeries(np.expand_dims(density, -1), domain)
@@ -526,7 +526,7 @@ if __name__ == "__main__":
                                 stacked_pressure, patch_count = [], 0
                                 for t in range(num_saved_steps):
                                     patch = pressure[t, x_start:x_start + window_size, y_start:y_start + window_size]
-                                    if np.sum(np.abs(patch) > threshold) < 1000:
+                                    if np.sum(np.abs(patch) > threshold) < 500:
                                         if patch_count > 1:
                                             executor.submit(save_hdf5, os.path.join(
                                                 patch_output_dir, f"n_{i}_x_{x}_y_{y}_t_{t - patch_count}__{patch_count:03d}.h5"),

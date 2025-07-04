@@ -148,12 +148,12 @@ if __name__ == "__main__":
     simulation_time = 0.001         # Duration of each simulation in seconds
     dt              = 1e-8           # Time step interval for j-Wave
     save_step       = 500            # Interval in time steps for recording pressure field
-    start_idx       = 0              # Starting index for simulation numbering
+    start_idx       = 10              # Starting index for simulation numbering
 
     # === Domain Settings ===
     domain_shape    = (276, 276)     # Shape of the simulation grid (2D or 3D)
     grid_spacing    = (1e-3, 1e-3)   # Grid spacing in meters for each axis
-    margin          = 10             # Number of grid points to trim at each boundary (e.g., to remove PML)
+    margin          = 0             # Number of grid points to trim at each boundary (e.g., to remove PML)
 
     # === Patch Extraction Parameters ===
     window_size     = 64             # Size of each spatial patch

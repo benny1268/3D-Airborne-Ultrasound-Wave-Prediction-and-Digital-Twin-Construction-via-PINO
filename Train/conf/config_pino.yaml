@@ -5,51 +5,60 @@ hydra:
   job:
     chdir: True
   run:
-    dir: ./outputs_32/outputs_2d_0628_v1_latent16  # Output directory for logs and checkpoints
+    dir: ./outputs/outputs_2d_0703_v4_2input   # Output directory for logs and checkpoints
 
 # ================================
 # General Settings
 # ================================
-seed: 42                            # Random seed for reproducibility
+general:
+  seed: 42                            # Random seed for reproducibility
 
 # ================================
 # Dataset Settings
 # ================================
-data_path: ./patch_training_data/training_data_patch_2d_0628_v2  # Path to dataset folder
-mul_noise_level: 0.5
-add_noise_level: 0.5
-pressure_std: 5
-train_ratio: 0.9                    # Ratio of dataset used for training
-
-# NOTE: pred_time must match model.fno.out_channels
-pred_time: 7                        # Prediction horizon (number of time steps)
+dataset:
+  data_path: ./training_data/patch_training_data/training_data_patch_2d_0703_v4  # Path to dataset folder
+  mult_input: 2                      # Number of input time steps
+  mult_output: 7                     # Number of output time steps
+  noise:
+    enable: False                    # Enable noise augmentation
+    mul_noise_level: 0.5             # Multiplicative noise strength
+    add_noise_level: 0.01            # Additive noise strength
+  pressure:
+    std: 0.065                       # Pressure normalization standard deviation
 
 # ================================
 # DataLoader Settings
 # ================================
-train_batch_size: 16                      # Batch size for training
-val_batch_size: 2
-num_workers: 8                      # Number of worker processes for data loading
+dataloader:
+  train_ratio: 0.9                   # Ratio of dataset used for training
+  train_batch_size: 16              # Batch size for training
+  val_batch_size: 2                 # Batch size for validation
+  num_workers: 8                    # Number of workers for DataLoader
 
 # ================================
 # Training Settings
 # ================================
-start_lr: 0.003                   # Initial learning rate
-max_epochs: 30                     # Number of training epochs
-eta_min: 1e-5                       # Minimum learning rate for CosineAnnealingLR
-save_interval: 10                  # Save checkpoint every N epochs
-checkpoint_path: ./savepoints     # Directory to save checkpoints
-betas: [0.9, 0.999]                # Adam optimizer parameters (momentum terms)
+training:
+  optimizer:
+    betas: [0.9, 0.999]             # Adam optimizer beta parameters
+  lr_schedule:
+    start_lr: 0.001                 # Initial learning rate
+    eta_min: 1e-5                   # Minimum learning rate for cosine scheduler
+  max_epochs: 30                    # Total training epochs
+  save:
+    interval: 10                    # Save checkpoint every N epochs
+    path: ./savepoints              # Directory to store checkpoints
 
 # ================================
 # Model Architecture (FNO)
 # ================================
 model:
   fno:
-    in_channels: 3                 # Input features: e.g., pressure, density, sound speed
-    out_channels: 7                # Output features = pred_time = 7
+    in_channels: 4                 # Input features: e.g., pressure, density, sound speed
+    out_channels: 7                # Output features = mult_output
     dimension: 2                   # Spatial dimensionality (2D or 3D)
-    latent_channels: 16            # Number of latent channels in FNO layers
+    latent_channels: 32            # Number of latent channels in FNO layers
     num_fno_layers: 8              # Number of FNO layers (blocks)
     num_fno_modes: 32              # Fourier modes kept in spectral domain
     padding: 4                     # Spatial padding size

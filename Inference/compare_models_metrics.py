@@ -5,89 +5,132 @@ import torch
 import physicsnemo
 import time
 import os
-def predict_full_domain(file_path, model_file_path, pred_time=7, case_idx=0, pressure_mean=0, pressure_std=1.0, device="cuda"):
+
+def predict_full_multstep(file_path, model_file_path, mult_input=2, mult_output=7,
+                          case_idx=0, pressure_mean=0, pressure_std=1.0, device="cuda"):
     """
-    Predict the full spatial domain using a trained model (no patching).
+    Predict the full spatial pressure field over time using a trained FNO model.
+    This version uses multi-step input and output (no patching).
 
     Args:
-        file_path (str): Path to the HDF5 dataset.
+        file_path (str): Path to HDF5 file containing input fields.
         model_file_path (str): Path to the trained model (.mdlus).
-        pred_time (int): Number of time steps to predict in each forward pass.
-        case_idx (int): Index of the case in the HDF5 file.
-        device (str): Device to run the model on ("cuda" or "cpu").
+        mult_input (int): Number of input time steps to use.
+        mult_output (int): Number of steps to predict per forward pass.
+        case_idx (int): Index of the case to predict.
+        pressure_mean (float): Mean used for pressure normalization.
+        pressure_std (float): Std used for pressure normalization.
+        device (str): Device to run inference on ("cuda" or "cpu").
 
     Returns:
-        np.ndarray: Predicted pressure field over time. Shape: (T, ...)
+        np.ndarray: Full predicted pressure tensor of shape (T, H, W).
     """
 
-    # === Load initial input: p0, density, sound_speed ===
-    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
-        density_min = 1.38
-        density_max = 5500
-        sound_speed_min = 150
-        sound_speed_max = 5400
+    # === Load initial pressure and static fields ===
+    def read_input(file_path, idx=0, mult_input=1, pressure_mean=0, pressure_std=1.0):
+        density_min, density_max = 1.38, 5500
+        sound_speed_min, sound_speed_max = 150, 5400
+
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
-            pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
-            pressure_t = (pressure_t - pressure_mean)  / pressure_std
+            pressure_in = torch.tensor(f["pressure"][idx][:mult_input], dtype=torch.float32)
+            pressure_in = (pressure_in - pressure_mean) / pressure_std
+
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
-            # Min-Max Normalization to [0, 1]
+
+            # Min-Max normalization
             density = (density - density_min) / (density_max - density_min)
             sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
 
-            invar = torch.cat([pressure_t, density, sound_speed], dim=0)
+            # Concatenate mult_input pressure + static fields
+            invar = torch.cat([pressure_in, density, sound_speed], dim=0)
+
         return invar, total_steps
 
-    # === Read input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
+    # === Prepare input and output tensors ===
+    input_data, total_steps = read_input(file_path, case_idx, mult_input, pressure_mean, pressure_std)
     input_data = input_data.to(device)
+
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype, device=device)
-    result_matrix[0] = input_data[0]  # Set initial pressure p0
+    result_matrix[0:mult_input] = input_data[0:mult_input]  # Initialize with known input steps
 
     # === Load the trained model ===
     model = physicsnemo.Module.from_checkpoint(model_file_path).to(device)
     model.eval()
 
-    # === Recursive prediction loop ===
-    for step in range(0, total_steps, pred_time):
-        input_data[0] = result_matrix[step]  # Update p0 for next input
+    # === Autoregressive prediction loop ===
+    for step in range(0, total_steps - mult_input, mult_output):
+        # Gather mult_input steps as model input
+        input_data[:mult_input] = result_matrix[step:step + mult_input]
+        X = input_data.unsqueeze(0)  # Shape: (1, C, H, W)
+
         with torch.no_grad():
-            output = model(input_data.unsqueeze(0))  # Shape: (1, pred_time, ...)
-            output = output.squeeze(0)               # Shape: (pred_time, ...)
-        remaining_steps = result_matrix.shape[0] - (step + 1)
-        actual_pred_time = min(pred_time, remaining_steps)
-        result_matrix[step+1:step+1+actual_pred_time] = output[:actual_pred_time]
+            pressure_out = model(X).squeeze(0)  # Shape: (mult_output, H, W)
 
-    result_matrix = (result_matrix * pressure_std ) + pressure_mean
+        # Prevent overflow beyond result_matrix
+        remaining_steps = total_steps - (step + mult_input)
+        actual_pred_time = min(mult_output, remaining_steps)
 
+        result_matrix[step + mult_input:step + mult_input + actual_pred_time] = pressure_out[:actual_pred_time]
+
+    # === Denormalize and return as numpy array ===
+    result_matrix = (result_matrix * pressure_std) + pressure_mean
     return result_matrix.cpu().numpy()
 
-def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_size=64, slide_step=32, batch_size=64, pressure_mean=0, pressure_std=1.0, device="cuda"):
-    # === Load the initial input (p0, density, sound_speed) ===
-    def read_input(file_path, idx=0, pressure_mean=0, pressure_std=1.0):
-        density_min = 1.38
-        density_max = 5500
-        sound_speed_min = 150
-        sound_speed_max = 5400
+def predict_patch_multstep(file_path, model_file_path, mult_input=1, mult_output=7, case_idx=0,
+                     block_size=64, slide_step=32, batch_size=64,
+                     pressure_mean=0, pressure_std=1.0, device="cuda", jwave_as_input=False):
+    """
+    Predict multi-step pressure fields using a sliding window patch-based FNO model.
+
+    Args:
+        file_path (str): Path to input HDF5 file.
+        model_file_path (str): Path to saved PhysicsNeMo model checkpoint.
+        mult_input (int): Number of input time steps.
+        mult_output (int): Number of steps to predict at once.
+        case_idx (int): Index of the sample to predict from the HDF5 file.
+        block_size (int): Size of the spatial patch.
+        slide_step (int): Sliding step between patches.
+        batch_size (int): Batch size for model inference.
+        pressure_mean (float): Mean for pressure normalization.
+        pressure_std (float): Std for pressure normalization.
+        device (str): Device to run inference on.
+        jwave_as_input (bool): If True, use ground-truth (jwave) for the input sequence.
+
+    Returns:
+        np.ndarray: Reconstructed full-field pressure tensor of shape (T, H, W)
+    """
+
+    # === Step 1: Load Input Tensor (p0, density, sound_speed) ===
+    def read_input(file_path, idx=0, mult_input=1, pressure_mean=0, pressure_std=1.0):
+        density_min, density_max = 1.38, 5500
+        sound_speed_min, sound_speed_max = 150, 5400
+
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][idx].shape[0]
-            pressure_t = torch.tensor(f["pressure"][idx][0], dtype=torch.float32).unsqueeze(0)
-            pressure_t = (pressure_t - pressure_mean)  / pressure_std
+
+            # Read mult_input steps of pressure
+            pressure_t = torch.tensor(f["pressure"][idx][:mult_input], dtype=torch.float32)
+            pressure_t = (pressure_t - pressure_mean) / pressure_std
+
+            # Read and normalize material fields
             density = torch.tensor(f["density"][idx], dtype=torch.float32).unsqueeze(0)
             sound_speed = torch.tensor(f["sound_speed"][idx], dtype=torch.float32).unsqueeze(0)
-            # Min-Max Normalization to [0, 1]
             density = (density - density_min) / (density_max - density_min)
             sound_speed = (sound_speed - sound_speed_min) / (sound_speed_max - sound_speed_min)
 
+            # Concatenate all input channels
             invar = torch.cat([pressure_t, density, sound_speed], dim=0)
+
         return invar, total_steps
 
-    # === Split the input into sliding patches (2D or 3D supported) ===
+    # === Step 2: Sliding Window Patch Extraction ===
     def slide_and_split(input_data, block_size=64, slide_step=32):
         ndim = input_data.ndim
         blocks = []
+
         if ndim == 3:  # (C, H, W)
             _, H, W = input_data.shape
             for i in range(0, H - block_size + 1, slide_step):
@@ -101,9 +144,10 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
                         blocks.append(input_data[:, d:d+block_size, i:i+block_size, j:j+block_size])
         else:
             raise ValueError("Only 2D or 3D tensors are supported.")
+
         return blocks
 
-    # === Compute Gaussian weight kernel (2D or 3D) ===
+    # === Step 3: Gaussian Weight Kernel (used for smooth blending) ===
     def gaussian_weight_tensor(block_size=64, sigma=None, dim=2, device="cpu", dtype=torch.float32):
         if sigma is None:
             sigma = block_size / 12
@@ -118,59 +162,68 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
             raise ValueError("Only dim=2 or dim=3 is supported.")
         return kernel / torch.max(kernel)
 
-    # === Reconstruct full tensor from overlapping patches ===
-    def combine(blocks, result_shape, pred_time=5, block_size=64, slide_step=32, device="cpu"):
+    # === Step 4: Combine Patches into Full Field ===
+    def combine(blocks, result_shape, pred_time=7, block_size=64, slide_step=32, device="cpu"):
         ndim = len(result_shape)
         dtype = blocks[0].dtype
 
         if ndim == 3:
             _, H, W = result_shape
             pred_full = torch.zeros((pred_time, H, W), device=device, dtype=dtype)
-            count_full = torch.zeros((pred_time, H, W), device=device, dtype=dtype)
+            count_full = torch.zeros_like(pred_full)
             weight = gaussian_weight_tensor(block_size, dim=2, device=device, dtype=dtype)
-            stacked = weight.unsqueeze(0).repeat(pred_time, 1, 1)
+            weight = weight.unsqueeze(0).repeat(pred_time, 1, 1)
             for i in range(0, H - block_size + 1, slide_step):
                 for j in range(0, W - block_size + 1, slide_step):
                     block = blocks.pop(0).to(device)
-                    pred_full[:, i:i+block_size, j:j+block_size] += block * stacked
-                    count_full[:, i:i+block_size, j:j+block_size] += stacked
+                    pred_full[:, i:i+block_size, j:j+block_size] += block * weight
+                    count_full[:, i:i+block_size, j:j+block_size] += weight
 
         elif ndim == 4:
             _, D, H, W = result_shape
             pred_full = torch.zeros((pred_time, D, H, W), device=device, dtype=dtype)
-            count_full = torch.zeros((pred_time, D, H, W), device=device, dtype=dtype)
+            count_full = torch.zeros_like(pred_full)
             weight = gaussian_weight_tensor(block_size, dim=3, device=device, dtype=dtype)
-            stacked = weight.unsqueeze(0).repeat(pred_time, 1, 1, 1)
+            weight = weight.unsqueeze(0).repeat(pred_time, 1, 1, 1)
             for d in range(0, D - block_size + 1, slide_step):
                 for i in range(0, H - block_size + 1, slide_step):
                     for j in range(0, W - block_size + 1, slide_step):
                         block = blocks.pop(0).to(device)
-                        pred_full[:, d:d+block_size, i:i+block_size, j:j+block_size] += block * stacked
-                        count_full[:, d:d+block_size, i:i+block_size, j:j+block_size] += stacked
+                        pred_full[:, d:d+block_size, i:i+block_size, j:j+block_size] += block * weight
+                        count_full[:, d:d+block_size, i:i+block_size, j:j+block_size] += weight
 
         return pred_full / torch.clamp(count_full, min=1e-8)
 
-    # === Load input and initialize result tensor ===
-    input_data, total_steps = read_input(file_path, case_idx, pressure_mean, pressure_std)
+    # === Step 5: Initialize Inference ===
+    input_data, total_steps = read_input(file_path, case_idx, mult_input, pressure_mean, pressure_std)
     result_shape = (total_steps,) + input_data.shape[1:]
     result_matrix = torch.zeros(result_shape, dtype=input_data.dtype)
-    result_matrix[0] = input_data[0]  # set p0
+    result_matrix[0:mult_input] = input_data[0:mult_input]  # Initialize with known input
 
-    # === Load model ===
     model = physicsnemo.Module.from_checkpoint(model_file_path).to(device)
     model.eval()
 
-    # === Main prediction loop ===
-    for step in range(0, total_steps, pred_time):
+    # === Step 6: Autoregressive Prediction ===
+    for step in range(0, total_steps - mult_input, mult_output):
         preds = []
-        input_data[0] = result_matrix[step]  # update p0
+
+        # Choose input source: either jwave truth or autoregressive result
+        if jwave_as_input:
+            with h5py.File(file_path, "r") as f:
+                pressure_t = torch.tensor(f["pressure"][case_idx][step:step+mult_input], dtype=torch.float32)
+                pressure_t = (pressure_t - pressure_mean) / pressure_std
+            input_data[:mult_input] = pressure_t
+        else:
+            input_data[:mult_input] = result_matrix[step:step+mult_input]
+
         blocks = slide_and_split(input_data, block_size, slide_step)
         batch_blocks = []
 
+        # === Patchwise Inference ===
         for idx, block in enumerate(blocks):
             if torch.all(torch.abs(block[0]) < 0.001):
-                zero_shape = (pred_time,) + block.shape[1:]
-                preds.append((idx, torch.zeros(zero_shape, dtype=input_data.dtype)))
+                # Skip silent region
+                preds.append((idx, torch.zeros((mult_output,) + block.shape[1:], dtype=input_data.dtype)))
             else:
                 batch_blocks.append((idx, block.unsqueeze(0)))
                 if len(batch_blocks) == batch_size:
@@ -182,6 +235,7 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
                         preds.append((out_idx, output.cpu()))
                     batch_blocks = []
 
+        # Remaining patches
         if batch_blocks:
             batch_indices, batch_inputs = zip(*batch_blocks)
             batch_input = torch.cat(batch_inputs, dim=0).to(device)
@@ -190,15 +244,16 @@ def predict_multstep(file_path, model_file_path, pred_time=7, case_idx=0, block_
             for out_idx, output in zip(batch_indices, batch_output):
                 preds.append((out_idx, output.cpu()))
 
-        preds = [pred for idx, pred in sorted(preds, key=lambda x: x[0])]
-        remaining_steps = result_matrix.shape[0] - (step + 1)
-        actual_pred_time = min(pred_time, remaining_steps)
+        # Sort predictions by index and combine
+        preds = [pred for _, pred in sorted(preds, key=lambda x: x[0])]
+        remaining_steps = result_matrix.shape[0] - (step + mult_input)
+        actual_pred_time = min(mult_output, remaining_steps)
 
-        combined_result = combine(preds, result_matrix.shape, pred_time, block_size, slide_step)
-        result_matrix[step+1:step+1+actual_pred_time] = combined_result[:actual_pred_time]
+        combined_result = combine(preds, result_matrix.shape, mult_output, block_size, slide_step)
+        result_matrix[step+mult_input:step+mult_input+actual_pred_time] = combined_result[:actual_pred_time]
 
-    result_matrix = (result_matrix * pressure_std ) + pressure_mean
-
+    # === Step 7: Denormalize and Return ===
+    result_matrix = (result_matrix * pressure_std) + pressure_mean
     return result_matrix.cpu().numpy()
 
 def compute_relative_l2_errors(y_pred, y_true, total_steps):
@@ -315,14 +370,7 @@ def compute_mean_over_double_threshold(y_true, total_steps):
         filtered_mean_list.append(0.0)
     return filtered_mean_list
 
-def process_dataset(file_path, model_path, case_nums=10, pred_time=7, device="cuda", log_process=False, pressure_mean=0, pressure_std=1.0):
-
-    def inverse_transform(pressure_transformed):
-        abs_val = np.abs(pressure_transformed)
-        sign = np.sign(pressure_transformed)
-        original = sign * (np.power(10.0, abs_val) - 1.0)
-        return original
-
+def process_dataset(file_path, model_path, case_nums=10, mult_input=1, mult_output=7, device="cuda", pressure_mean=0, pressure_std=1.0, jwave_as_input=False):
         
     metric_results = {
         "Relative L2 Error": [],
@@ -334,16 +382,18 @@ def process_dataset(file_path, model_path, case_nums=10, pred_time=7, device="cu
     }
 
     for case_idx in range(case_nums):
+
         print(f"Processing Case {case_idx}...")
         start_time = time.time()
-        result_matrix = predict_multstep(file_path=file_path, model_file_path=model_path, pred_time=pred_time, case_idx=case_idx, device=device, pressure_mean=pressure_mean, pressure_std=pressure_std)
+        result_matrix = predict_patch_multstep(file_path=file_path, model_file_path=model_path, mult_input=mult_input, mult_output=mult_output, 
+                                               case_idx=case_idx, device=device, pressure_mean=pressure_mean, pressure_std=pressure_std, jwave_as_input=jwave_as_input)
         print(f"Compute time : {time.time() - start_time}")
+
+
         with h5py.File(file_path, "r") as f:
             total_steps = f["pressure"][case_idx].shape[0]
             pressure_field_gt = np.array(f["pressure"][case_idx], dtype=np.float32)
-        if log_process :
-            pressure_field_gt = inverse_transform(pressure_field_gt)
-            result_matrix = inverse_transform(result_matrix)
+
         metric_results["Relative L2 Error"].append(compute_relative_l2_errors(result_matrix, pressure_field_gt, total_steps))
         metric_results["RMSE"].append(compute_rmse(result_matrix, pressure_field_gt, total_steps))
         metric_results["Nash–Sutcliffe Efficiency"].append(compute_nash_sutcliffe_efficiency(result_matrix, pressure_field_gt, total_steps))
@@ -378,26 +428,25 @@ def plot_multi_models_with_shaded_error(data_all, ylabel, title, save_path, metr
     plt.close()
 
 if __name__ == "__main__":
-    data_path = "./Data/training_data_2d_0628_v2.h5"
-    output_dir = "./error_results/model_comparison_diff_layers_nums"
+    data_path = "./Data/training_data_2d_0703_v4.h5"
+    output_dir = "./error_results/test3"
 
     model_paths = {
-        "Fourier Layer = 4": "./model/hele_2d_patch/0703/diff_layers/l4.mdlus",
-        "Fourier Layer = 6": "./model/hele_2d_patch/0703/diff_layers/l6.mdlus",
-        "Fourier Layer = 8": "./model/hele_2d_patch/0703/diff_layers/l8.mdlus",
-        "Fourier Layer = 10": "./model/hele_2d_patch/0703/diff_layers/l10.mdlus",       
+        "v1": "./model/hele_2d_patch/0703/v1.mdlus",
+        "v2": "./model/hele_2d_patch/0703/v2.mdlus",
+        "v3": "./model/hele_2d_patch/0703/v3.mdlus",
     }
+    mult_list = [1,2,3]
+
     data_all = {}
-
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     for i, (model_name, model_path) in enumerate(model_paths.items()):
-        print(f"\n=== Processing Model: {model_name} ===")
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        print("Processing Dataset...")
-        data_all[model_name] = process_dataset(data_path, model_path, case_nums=10, pred_time=7, device=device, log_process=False)
+        print(f"=== Processing Model: {model_name} ===")
+        print("\nProcessing Dataset...")
+        data_all[model_name] = process_dataset(data_path, model_path, case_nums=10, mult_input=mult_list[i], pred_time=7, device=device, pressure_std=0.065, jwave_as_input=False)
 
     os.makedirs(output_dir, exist_ok=True)
+
     plot_multi_models_with_shaded_error(
         data_all=data_all,
         ylabel="Relative L2 Error",
@@ -429,6 +478,4 @@ if __name__ == "__main__":
         save_path=os.path.join(output_dir, "comparison_nse.png"),
         metrics=["Nash–Sutcliffe Efficiency"]
     )
-
-
 
