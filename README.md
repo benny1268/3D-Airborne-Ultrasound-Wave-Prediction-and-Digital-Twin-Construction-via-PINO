@@ -1,4 +1,4 @@
-# 🌀 3D Airborne Ultrasound Wave Prediction and Digital Twin Construction via Physics-Informed Neural Operators (PINO)
+# 3D Airborne Ultrasound Wave Prediction and Digital Twin Construction via Physics-Informed Neural Operators (PINO)
 
 本專案提供一套完整流程，用於訓練**空氣超音波陣列物理模擬的 PINO 模型**，包含：
 
