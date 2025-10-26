@@ -59,9 +59,7 @@ conf/config_pino.yaml
 
 ---
 
-## 使用輸出結果
+## 詳細教學
 
-訓練完成後，模型會儲存在 `outputs/` 資料夾內，可用於推論或進行時序模擬。
-
-支援預測壓力場演化、比較 Ground Truth 及預測誤差（RMSE、Relative L2 Error 等指標）。
+https://hackmd.io/@benny88129/Bk7fCRjRge
 
