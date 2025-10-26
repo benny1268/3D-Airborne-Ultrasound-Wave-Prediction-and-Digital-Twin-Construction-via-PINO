@@ -17,7 +17,7 @@
 pip install -r nv_physicsnemo_requirement.txt
 ```
 
-### (2) 安裝 PhysicsNeMo-Sym 模組（必要）
+### (2) 安裝 PhysicsNeMo-Sym 模組
 
 ```bash
 pip install nvidia-physicsnemo-sym --no-build-isolation
