@@ -1,4 +1,4 @@
-# j-Wave\simulate
+# j-Wave 模擬
 
 本資料夾提供以 [`jwave`](https://github.com/ucl-bug/jwave) 為基礎的**空氣超音波聲場模擬工具**，用以產生 PINO 模型訓練所需資料。
 
@@ -55,7 +55,7 @@ python simulate_jwave.py
 
 ---
 
-## 詳細教學
+## 詳細教學與程式碼說明
 
 https://hackmd.io/@benny88129/r1d4aMIAgx
 

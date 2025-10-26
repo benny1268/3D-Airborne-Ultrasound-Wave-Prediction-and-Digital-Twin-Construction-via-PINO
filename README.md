@@ -19,7 +19,3 @@
 
 ---
 
-### ► 詳細使用方式請見：
-- [`j-Wave_simulate//README.md`](./Trainingdata_generation/README.md)
-- [`train/README.md`](./Train/README.md)
-

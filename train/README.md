@@ -1,4 +1,4 @@
-# Train
+# PINO訓練
 
 本資料夾為**PINO 模型訓練流程**，使用 NVIDIA PhysicsNeMo 套件，並以 `Trainingdata_generation/` 資料夾產生的聲場模擬資料進行學習。
 
@@ -59,7 +59,7 @@ conf/config_pino.yaml
 
 ---
 
-## 詳細教學
+## 詳細教學與程式碼說明
 
 https://hackmd.io/@benny88129/Bk7fCRjRge
 
