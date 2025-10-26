@@ -1,0 +1,97 @@
+# ================================
+# Hydra Configuration
+# ================================
+hydra:
+  job:
+    chdir: True
+  run:
+    dir: /mnt/ssd/guowei_R12921078/pino_project/Training/outputs_2d_0906/no_patch # Output directory for logs and checkpoints
+
+# ================================
+# General Settings
+# ================================
+general:
+  seed: 42                            # Random seed for reproducibility
+
+# ================================
+# Dataset Settings
+# ================================
+dataset:
+  data_path: /mnt/ssd/guowei_R12921078/pino_project/Training/training_data/patch_training_data/training_data_patch_2d_0906_hom_nopatch # Path to dataset folder
+  mult_input: 3                      # Number of input time steps
+  mult_output: 10                     # Number of output time steps
+  noise:
+    enable: True                    # Enable noise augmentation
+    mul_noise_level: 0.04         #  Multiplicative noise strength
+    add_noise_level: 0              # Additive noise strength
+  pressure:
+    std: 1                       # Pressure normalization standard deviation
+  density_soundspeed_enable: True
+  stride: 10
+
+# ================================
+# DataLoader Settings
+# ================================
+dataloader:
+  train_ratio: 0.9                   # Ratio of dataset used for training
+  train_batch_size: 8               # Batch size for training
+  val_batch_size: 1                 # Batch size for validation
+  num_workers: 8                    # Number of workers for DataLoader
+
+# ================================
+# Training Settings
+# ================================
+training:
+  optimizer:
+    betas: [0.9, 0.999]             # Adam optimizer beta parameters
+    weight_decay: 1e-5
+  lr_schedule:
+    start_lr: 1e-3                  # Initial learning rate
+    eta_min: 5e-6                   # Minimum learning rate for cosine scheduler
+    warmup_epochs: 10
+  max_epochs: 300                   # Total training epochs
+  save:
+    interval: 10                    # Save checkpoint every N epochs
+    path: ./savepoints              # Directory to store checkpoints
+
+# ================================
+# Model Architecture (FNO, U-FNO, F-FNO)
+# ================================
+use_model_name: F-FNO
+
+model:
+  fno:
+    in_channels: 5                 # Input features: e.g., pressure, density, sound speed
+    out_channels: 5                # Output features = mult_output
+    dimension: 2                   # Spatial dimensionality (2D or 3D)
+    latent_channels: 32            # Number of latent channels in FNO layers
+    num_fno_layers: 6              # Number of FNO layers (blocks)
+    num_fno_modes: [100, 100]      # Fourier modes kept in spectral domain
+    padding: 0                     # Spatial padding size
+    decoder_layers: 1              # Number of decoder (fully connected) layers
+    decoder_layer_size: 128        # Width of each decoder layer
+  
+  ufno:
+    in_channels: 5                 # Input features: e.g., pressure, density, sound speed
+    out_channels: 5                # Output features = mult_output
+    dimension: 2                   # Spatial dimensionality (2D or 3D)
+    latent_channels: 32            # Number of latent channels in FNO layers
+    num_fno_layers: 4              # Number of FNO layers (without U-Net)
+    num_ufno_layers: 4             # Number of FNO layers (with U-Net)
+    num_fno_modes: [100, 100]      # Fourier modes kept in spectral domain
+    padding: 0                     # Spatial padding size
+    decoder_layers: 1              # Number of decoder (fully connected) layers
+    decoder_layer_size: 128        # Width of each decoder layer
+
+  ffno:
+    in_channels: 5                 # Input features: e.g., pressure, density, sound speed
+    out_channels: 10               # Output features = mult_output
+    dimension: 2                   # Spatial dimensionality (2D or 3D)
+    latent_channels: 32            # Number of latent channels in FFNO layers
+    num_fno_layers: 8              # Number of FFNO layers
+    num_fno_modes: [100, 100]      # Fourier modes kept in spectral domain
+    padding: 0                     # Spatial padding size
+    decoder_layers: 1              # Number of decoder (fully connected) layers
+    decoder_layer_size: 128        # Width of each decoder layer
+
+

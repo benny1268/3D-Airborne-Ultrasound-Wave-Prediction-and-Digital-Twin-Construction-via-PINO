@@ -552,28 +552,23 @@ def simulate_wave_propagation(
       sensors (Any): The sensor terms.
       u0 (Field): The initial velocity field.
       p0 (Field): The initial pressure field.
-      checkpoint (CheckpointType): The kind of checkpointing to use for the
-        simulation.
+      checkpoint (CheckpointType): The kind of checkpointing to use for the simulation.
       smooth_initial (bool): Whether to smooth the initial conditions.
       params: The operator parameters.
 
     Returns:
       Any: The recording of the sensors at specific time steps.
     """
-    # Default sensors simply return the pressure field
     if sensors is None:
         sensors = lambda p, u, rho: p
 
-    # 設置參數
     output_steps = jnp.arange(0, time_axis.Nt, 1)  # 時間步長
     dt = time_axis.dt
 
-    # 取得聲速參數
     c_ref = params["c_ref"]
     pml_rho = params["pml_rho"]
     pml_u = params["pml_u"]
 
-    # 初始化變數
     shape = tuple(list(medium.domain.N) + [len(medium.domain.N)])
     shape_one = tuple(list(medium.domain.N) + [1])
 
@@ -590,21 +585,17 @@ def simulate_wave_propagation(
             p0_params = jnp.expand_dims(smooth(p0_params), -1)
             p0 = p0.replace_params(p0_params)
 
-        # 設定初始速度場 u(t=0) = 0
         u0 = (-dt * momentum_conservation_rhs(
             p0, u0, medium, c_ref=c_ref, dt=dt, params=params["fourier"]) / 2)
 
-    # 初始化聲學密度場
     rho = (p0.replace_params(
         jnp.stack([p0.params[..., i]
                    for i in range(p0.domain.ndim)], axis=-1)) / p0.domain.ndim)
     rho = rho / (medium.sound_speed**2)
 
-    # 設定儲存的時間步
-    # 計算需要存儲的時間步數，確保轉換為整數
+
     num_saved_steps = int(time_axis.Nt // save_step)
 
-    # 初始化儲存空間
     saved_outputs = jnp.zeros((num_saved_steps,) + medium.domain.N + (1,))
 
     def scan_fun(carry, n):
@@ -634,8 +625,7 @@ def simulate_wave_propagation(
 
         p = pressure_from_density(rho, medium)
 
-        # 轉換 save_idx 為 int32，確保能用作索引
-        save_idx = jnp.asarray(n // 500, dtype=jnp.int32)
+        save_idx = jnp.asarray(n // save_step, dtype=jnp.int32)
 
         saved_outputs = jax.lax.cond(
             (n % save_step) == 0,
@@ -643,9 +633,9 @@ def simulate_wave_propagation(
             lambda so: so,
             saved_outputs
         )
+        
         return ([p, u, rho], saved_outputs), None
 
-    # 進行 scan 計算
     (_, saved_outputs), _ = jax.lax.scan(scan_fun, ([p0, u0, rho], saved_outputs), output_steps)
 
     return saved_outputs
