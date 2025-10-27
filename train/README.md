@@ -1,6 +1,6 @@
 # PINO訓練
 
-本資料夾為**PINO 模型訓練流程**，使用 NVIDIA PhysicsNeMo 套件，並以 `Trainingdata_generation/` 資料夾產生的聲場模擬資料進行學習。
+本資料夾為**PINO 模型訓練流程**，使用 NVIDIA PhysicsNeMo 套件，並以 `j-Wave_simulate/` 資料夾產生的聲場模擬資料進行學習。
 
 ## 環境建議
 
